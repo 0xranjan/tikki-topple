@@ -1,22 +1,13 @@
 /* ============================================================
-   TIKI TOPPLE – Complete Game Logic  (FIXED v2)
-   NPC Board2Code Hackathon 2026
+   TIKI TOPPLE – Complete Game Logic (PRODUCTION VERSION)
+   NPC Board2Code Hackathon 2026 – ALL ERRORS FIXED
    ============================================================
 
-   HOW MOVE WORKS (corrected):
-   - The "active stack" concept: all tokens live in one ordered list
-     called G.stack.  Tokens that have been placed on the board are
-     ALSO tracked by G.board[pos], but the canonical order comes from
-     G.stack.
-   - On Move: the player selects the TOP 1-3 tokens of G.stack.
-     Each selected token advances its position by +1.
-     If a token was at position 0 (not yet on board) it goes to 1.
-     If it was at position N it goes to N+1 (capped at boardLen).
-   - On Reorder: swap the order of top 2-3 tokens inside G.stack
-     (their board positions do NOT change, only stack order changes).
-   - This means: tokens stay in the stack forever (the stack represents
-     the ordering of ALL tokens), but each has a position on the track.
-     The stack order decides WHICH tokens are accessible (top 3 only).
+   HOW MOVE WORKS:
+   - G.stack = ordered list of ALL token ids (canonical order)
+   - Each token has a position (0 = not on board, 1..boardLen = track position)
+   - On Move: top 1-3 tokens advance +1 position each
+   - On Reorder: stack order changes, track positions stay same
    ============================================================ */
 
 "use strict";
@@ -28,12 +19,19 @@ const RANK_POINTS   = [50,35,25,18,14,10,7,4,2];
 
 let G = {};
 
-const $  = id => document.getElementById(id);
+const $  = id => {
+  const el = document.getElementById(id);
+  if (!el) console.warn(`Element not found: ${id}`);
+  return el;
+};
+
 const qs = (s, ctx=document) => ctx.querySelector(s);
 
 function showScreen(id) {
+  const el = $(id);
+  if (!el) return;
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  $(id).classList.add("active");
+  el.classList.add("active");
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -42,33 +40,41 @@ function showScreen(id) {
 let setup = { numPlayers:2, boardLen:10, maxTurns:25 };
 
 function initSetup() {
-  document.querySelectorAll(".pcount-btn").forEach(btn =>
+  const pbtns = document.querySelectorAll(".pcount-btn");
+  const bbtns = document.querySelectorAll(".board-btn");
+  const tbtns = document.querySelectorAll(".turn-btn");
+  const startBtn = $("btn-start");
+
+  pbtns.forEach(btn =>
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".pcount-btn").forEach(b => b.classList.remove("active"));
+      pbtns.forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       setup.numPlayers = +btn.dataset.count;
       renderNameInputs();
     }));
 
-  document.querySelectorAll(".board-btn").forEach(btn =>
+  bbtns.forEach(btn =>
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".board-btn").forEach(b => b.classList.remove("active"));
+      bbtns.forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       setup.boardLen = +btn.dataset.len;
     }));
 
-  document.querySelectorAll(".turn-btn").forEach(btn =>
+  tbtns.forEach(btn =>
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".turn-btn").forEach(b => b.classList.remove("active"));
+      tbtns.forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       setup.maxTurns = +btn.dataset.turns;
     }));
 
-  $("btn-start").addEventListener("click", startGame);
+  if (startBtn) startBtn.addEventListener("click", startGame);
   renderNameInputs();
 }
 
 function renderNameInputs() {
+  const wrap = $("player-names-wrap");
+  if (!wrap) return;
+
   let html = '<div class="player-names">';
   for (let i = 0; i < setup.numPlayers; i++) {
     html += `
@@ -78,7 +84,7 @@ function renderNameInputs() {
           placeholder="Player ${i+1}" maxlength="16"/>
       </div>`;
   }
-  $("player-names-wrap").innerHTML = html + "</div>";
+  wrap.innerHTML = html + "</div>";
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -93,7 +99,7 @@ function startGame() {
   }
 
   const TOTAL = 9;
-  // Distribute tokens round-robin then shuffle so ownership is random
+  // Distribute tokens round-robin then shuffle
   const own = [];
   for (let t = 0; t < TOTAL; t++) own.push(t % n);
   shuffleArray(own);
@@ -106,7 +112,7 @@ function startGame() {
       name: TIKI_NAMES[t],
       face: TIKI_FACES[t],
       owner: own[t],
-      position: 0        // 0 = in stack, 1..boardLen = on track
+      position: 0        // 0 = not on board yet, 1..boardLen = track position
     });
   }
 
@@ -117,15 +123,16 @@ function startGame() {
   G = {
     players  : names.map((nm, i) => ({ id:i, name:nm, color:PLAYER_COLORS[i], score:0 })),
     tokens,
-    stack,               // ALL 9 tokens stay here; order changes via Reorder action
+    stack,               // ALL 9 tokens stay here forever; order changes via Reorder
     boardLen : setup.boardLen,
     maxTurns : setup.maxTurns,
     turn     : 1,
     curPlayer: 0,
-    selected : [],       // token ids currently selected (must be top of stack)
-    rDraft   : [],
-    rOpen    : false,
-    log      : []
+    selected : [],       // token ids currently selected
+    rDraft   : [],       // tokens being reordered
+    rOpen    : false,    // reorder panel open?
+    log      : [],       // game log
+    gameOver : false     // game ended?
   };
 
   showScreen("screen-game");
@@ -146,16 +153,23 @@ function renderAll() {
 
 /* ── Header ── */
 function renderHeader() {
-  $("turn-current").textContent = G.turn;
-  $("turn-max").textContent     = G.maxTurns;
+  const turnCur = $("turn-current");
+  const turnMax = $("turn-max");
+  const pName = $("cur-player-name");
+  const pDot = $("cur-player-dot");
+
+  if (turnCur) turnCur.textContent = G.turn;
+  if (turnMax) turnMax.textContent = G.maxTurns;
+  
   const p = G.players[G.curPlayer];
-  $("cur-player-name").textContent  = p.name;
-  $("cur-player-dot").style.background = p.color;
+  if (pName) pName.textContent = p.name;
+  if (pDot) pDot.style.background = p.color;
 }
 
 /* ── Stack panel ── */
 function renderStack() {
   const wrap = $("stack-display");
+  if (!wrap) return;
   wrap.innerHTML = "";
 
   G.stack.forEach((tid, idx) => {
@@ -169,8 +183,10 @@ function renderStack() {
     if (isSel)   chip.classList.add("selected");
     if (!canSel) chip.classList.add("disabled-token");
 
-    // All tokens in stack are at position 0 (not yet on board)
-    const posLabel = "Stack";
+    // Show current track position on the chip
+    const posLabel = tok.position === 0
+      ? "Stack"
+      : (tok.position >= G.boardLen ? "🏁 Finish" : `Pos ${tok.position}`);
 
     chip.innerHTML = `
       <span class="token-face">${tok.face}</span>
@@ -202,7 +218,7 @@ function isSelectable(idx) {
 
 function toggleSel(tid, idx) {
   if (G.selected.includes(tid)) {
-    // Deselect this token and all tokens at higher stack indices that are selected
+    // Deselect this token and all tokens at higher stack indices
     const toRemove = new Set(G.stack.slice(idx).filter(id => G.selected.includes(id)));
     G.selected = G.selected.filter(id => !toRemove.has(id));
   } else {
@@ -214,6 +230,8 @@ function toggleSel(tid, idx) {
 
 function updateSelInfo() {
   const info = $("selection-info");
+  if (!info) return;
+  
   const n = G.selected.length;
   info.textContent = n === 0
     ? "Click top tokens to select (max 3)"
@@ -228,79 +246,133 @@ function selContiguousTop() {
   const sorted = [...idxs].sort((a,b) => a-b);
   if (sorted[0] !== 0) return false;
   for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] !== sorted[i-1]+1) return false;
+    if (sorted[i] !== sorted[i-1] + 1) return false;
   }
   return true;
 }
 
-/* ── Board / Track panel ── */
+/* ── Board ── */
 function renderBoard() {
-  const track = $("board-track");
+  const track = $("track-display");
+  if (!track) return;
   track.innerHTML = "";
 
-  // Build a lookup: position → array of token ids AT that position
-  const posMap = {};
-  for (let p = 1; p <= G.boardLen; p++) posMap[p] = [];
-  G.tokens.forEach(t => {
-    if (t.position >= 1 && t.position <= G.boardLen) posMap[t.position].push(t.id);
-  });
-
-  // Finish label row (above boardLen)
-  const fin = document.createElement("div");
-  fin.className = "track-cell finish-cell";
-  fin.innerHTML = `<span class="cell-label">🏁</span><div class="cell-tokens"></div>`;
-  track.appendChild(fin);
-
-  // Positions from high → low (top of screen = closer to finish)
+  // Create numbered positions from top to bottom
   for (let pos = G.boardLen; pos >= 1; pos--) {
-    const cell = document.createElement("div");
-    cell.className = "track-cell" + (pos === 1 ? " start-cell" : "");
+    const row = document.createElement("div");
+    row.className = "track-row";
+    row.style.height = "50px";
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.borderBottom = "1px solid rgba(255,255,255,0.1)";
+    row.style.paddingLeft = "10px";
 
-    const toksHtml = posMap[pos].map(id => {
-      const t = G.tokens[id];
-      const stackRank = G.stack.indexOf(id);  // position in stack (lower = nearer top)
-      const isTop3 = stackRank < 3;
-      const isSel  = G.selected.includes(id);
-      const highlight = isSel ? "outline:2px solid #ffd130;" : (isTop3 ? "outline:1px dashed rgba(255,209,48,0.4);" : "");
-      return `<span class="track-token tiki-track-${id}"
-                style="${highlight}"
-                title="${t.name} | ${G.players[t.owner].name} | Stack #${stackRank+1}">
-                ${t.face} ${t.name}
-              </span>`;
-    }).join("");
+    // Position number
+    const numDiv = document.createElement("div");
+    numDiv.style.minWidth = "30px";
+    numDiv.style.fontSize = "14px";
+    numDiv.style.color = "rgba(255,255,255,0.3)";
+    numDiv.style.fontWeight = "bold";
+    numDiv.textContent = pos;
+    row.appendChild(numDiv);
 
-    cell.innerHTML = `<span class="cell-label">${pos}</span><div class="cell-tokens">${toksHtml || ""}</div>`;
-    track.appendChild(cell);
+    // Tokens at this position
+    const tokDiv = document.createElement("div");
+    tokDiv.style.flex = "1";
+    tokDiv.style.display = "flex";
+    tokDiv.style.gap = "8px";
+    tokDiv.style.paddingLeft = "15px";
+    tokDiv.style.flexWrap = "wrap";
+
+    const atPos = G.tokens.filter(t => t.position === pos);
+    atPos.forEach(tok => {
+      const tokEl = document.createElement("div");
+      tokEl.className = "board-token";
+      tokEl.style.width = "40px";
+      tokEl.style.height = "40px";
+      tokEl.style.display = "flex";
+      tokEl.style.alignItems = "center";
+      tokEl.style.justifyContent = "center";
+      tokEl.style.borderRadius = "8px";
+      tokEl.style.backgroundColor = G.players[tok.owner].color;
+      tokEl.style.fontSize = "24px";
+      tokEl.style.cursor = "default";
+      tokEl.style.boxShadow = "0 2px 6px rgba(0,0,0,0.3)";
+      tokEl.title = `${tok.name} (${G.players[tok.owner].name})`;
+      tokEl.textContent = tok.face;
+      tokDiv.appendChild(tokEl);
+    });
+
+    row.appendChild(tokDiv);
+    track.appendChild(row);
   }
 
-  // Stack row (position 0 tokens)
-  const stackToks = G.tokens.filter(t => t.position === 0);
-  const sc = document.createElement("div");
-  sc.className = "track-cell start-cell";
-  const stHtml = stackToks.map(t =>
-    `<span class="track-token tiki-track-${t.id}">${t.face}</span>`
-  ).join("");
-  sc.innerHTML = `<span class="cell-label">STACK</span><div class="cell-tokens">${stHtml}</div>`;
-  track.appendChild(sc);
+  // Finish line
+  const finishRow = document.createElement("div");
+  finishRow.className = "track-row finish-row";
+  finishRow.style.height = "60px";
+  finishRow.style.display = "flex";
+  finishRow.style.alignItems = "center";
+  finishRow.style.borderTop = "3px solid #ffd700";
+  finishRow.style.borderBottom = "3px solid #ffd700";
+  finishRow.style.paddingLeft = "10px";
+  finishRow.style.backgroundColor = "rgba(255,215,0,0.05)";
+  
+  const finishLabel = document.createElement("div");
+  finishLabel.style.minWidth = "30px";
+  finishLabel.style.fontSize = "20px";
+  finishLabel.textContent = "🏁";
+  finishRow.appendChild(finishLabel);
+
+  const finishToks = document.createElement("div");
+  finishToks.style.flex = "1";
+  finishToks.style.display = "flex";
+  finishToks.style.gap = "8px";
+  finishToks.style.paddingLeft = "15px";
+  finishToks.style.flexWrap = "wrap";
+
+  const atFinish = G.tokens.filter(t => t.position >= G.boardLen);
+  atFinish.forEach(tok => {
+    const tokEl = document.createElement("div");
+    tokEl.style.width = "40px";
+    tokEl.style.height = "40px";
+    tokEl.style.display = "flex";
+    tokEl.style.alignItems = "center";
+    tokEl.style.justifyContent = "center";
+    tokEl.style.borderRadius = "8px";
+    tokEl.style.backgroundColor = G.players[tok.owner].color;
+    tokEl.style.fontSize = "24px";
+    tokEl.style.boxShadow = "0 2px 6px rgba(0,0,0,0.3)";
+    tokEl.title = `${tok.name} (${G.players[tok.owner].name})`;
+    tokEl.textContent = tok.face;
+    finishToks.appendChild(tokEl);
+  });
+
+  finishRow.appendChild(finishToks);
+  track.appendChild(finishRow);
 }
 
-/* ── Action buttons ── */
 function refreshBtns() {
-  const n  = G.selected.length;
-  const ok = selContiguousTop();
-  $("btn-move").disabled    = !(n >= 1 && n <= 3 && ok);
-  $("btn-reorder").disabled = !(n >= 2 && n <= 3 && ok);
+  const btnMove = $("btn-move");
+  const btnReorder = $("btn-reorder");
+
+  if (btnMove) btnMove.disabled = !selContiguousTop();
+  if (btnReorder) btnReorder.disabled = !selContiguousTop() || G.selected.length < 2;
 }
 
 /* ── Scores ── */
 function calcScores() {
-  // Rank tokens by position descending; higher position = more points
-  const sorted = [...G.tokens].sort((a,b) => b.position - a.position);
   const pts = {};
-  let r = 0, i = 0;
+  G.tokens.forEach(t => pts[t.id] = 0);
+
+  const sorted = [...G.tokens].sort((a,b) => b.position - a.position);
+  
+  let i = 0;
+  let r = 0;
   while (i < sorted.length) {
-    let j = i;
+    let j = i + 1;
     while (j < sorted.length && sorted[j].position === sorted[i].position) j++;
+    
     // Average rank points for ties
     let sum = 0;
     for (let k = r; k < r+(j-i); k++) sum += (RANK_POINTS[k] || 1);
@@ -309,6 +381,7 @@ function calcScores() {
     r += (j - i);
     i = j;
   }
+  
   G.players.forEach(p => {
     p.score = G.tokens
       .filter(t => t.owner === p.id)
@@ -317,9 +390,13 @@ function calcScores() {
 }
 
 function renderScores() {
+  const scoreboard = $("score-board");
+  if (!scoreboard) return;
+
   calcScores();
   const sorted = [...G.players].sort((a,b) => b.score - a.score);
-  $("score-board").innerHTML = sorted.map(p => {
+  
+  scoreboard.innerHTML = sorted.map(p => {
     const faces = G.tokens.filter(t => t.owner === p.id).map(t => t.face).join("");
     return `
       <div class="score-row">
@@ -340,7 +417,10 @@ function addLog(msg) {
 }
 
 function renderLog() {
-  $("log-entries").innerHTML = G.log.slice(0, 8).map((e, i) =>
+  const logDiv = $("log-entries");
+  if (!logDiv) return;
+
+  logDiv.innerHTML = G.log.slice(0, 8).map((e, i) =>
     `<div class="log-entry ${i===0?"log-new":""}">${e}</div>`
   ).join("");
 }
@@ -349,54 +429,72 @@ function renderLog() {
    ACTION: MOVE FORWARD
    ─────────────────────────────────────────────────────────
    Selected tokens (top 1-3 of stack) each advance +1 position.
-   Stack ORDER does not change — only position values change.
-   Tokens at boardLen (finish) cannot advance further.
+   *** FIXED: renderBoard() called after move ***
 ═══════════════════════════════════════════════════════════ */
-$("btn-move").addEventListener("click", () => {
-  if (!selContiguousTop()) return;
+const btnMove = $("btn-move");
+if (btnMove) {
+  btnMove.addEventListener("click", () => {
+    if (!selContiguousTop()) return;
 
-  // Sort selected by stack order (top first)
-  const toMove = [...G.selected].sort((a,b) => G.stack.indexOf(a) - G.stack.indexOf(b));
+    // Sort selected by stack order (top first)
+    const toMove = [...G.selected].sort((a,b) => G.stack.indexOf(a) - G.stack.indexOf(b));
 
-  const moved = [];
-  toMove.forEach(id => {
-    const tok = G.tokens[id];
-    if (tok.position < G.boardLen) {
-      tok.position += 1;
-      moved.push(`${tok.name}→${tok.position}`);
+    const moved = [];
+    toMove.forEach(id => {
+      const tok = G.tokens[id];
+      if (tok.position < G.boardLen) {
+        tok.position += 1;   // ← Advance +1 from current position
+        moved.push(`${tok.name}→${tok.position}`);
+      } else {
+        moved.push(`${tok.name}(finish)`);
+      }
+    });
+
+    addLog(`${G.players[G.curPlayer].name} moved [${moved.join(", ")}]`);
+    G.selected = [];
+    
+    // *** FIX: Call renderBoard immediately to show movement ***
+    renderAll();
+    
+    // Check if game ends AFTER rendering
+    if (checkEnd()) {
+      setTimeout(doShowResults, 500);  // Small delay so user sees final board
     } else {
-      moved.push(`${tok.name}(at finish)`);
+      doEndTurn();
     }
   });
-
-  // ✅ Remove from stack any token that has moved onto the board (position > 0)
-  G.stack = G.stack.filter(id => G.tokens[id].position === 0);
-
-  addLog(`${G.players[G.curPlayer].name} moved [${moved.join(", ")}]`);
-  G.selected = [];
-  doEndTurn();
-});
+}
 
 /* ════════════════════════════════════════════════════════════
    ACTION: REORDER
    ─────────────────────────────────────────────────────────
    Selected top 2-3 tokens are rearranged within G.stack.
-   Their positions on the track do NOT change.
-   Only the stack order changes (which affects future accessibility).
 ═══════════════════════════════════════════════════════════ */
-$("btn-reorder").addEventListener("click", () => {
-  if (!selContiguousTop()) return;
-  const sel = [...G.selected].sort((a,b) => G.stack.indexOf(a) - G.stack.indexOf(b));
-  G.rDraft = [...sel];
-  G.rOpen  = true;
-  $("reorder-panel").classList.remove("hidden");
-  $("btn-move").disabled    = true;
-  $("btn-reorder").disabled = true;
-  renderRList();
-});
+const btnReorder = $("btn-reorder");
+if (btnReorder) {
+  btnReorder.addEventListener("click", () => {
+    if (!selContiguousTop() || G.selected.length < 2) return;
+    
+    const sel = [...G.selected].sort((a,b) => G.stack.indexOf(a) - G.stack.indexOf(b));
+    G.rDraft = [...sel];
+    G.rOpen  = true;
+    
+    const panel = $("reorder-panel");
+    if (panel) panel.classList.remove("hidden");
+    
+    const bm = $("btn-move");
+    const br = $("btn-reorder");
+    if (bm) bm.disabled = true;
+    if (br) br.disabled = true;
+    
+    renderRList();
+  });
+}
 
 function renderRList() {
   const list = $("reorder-list");
+  if (!list) return;
+  
   list.innerHTML = "";
   G.rDraft.forEach((tid, i) => {
     const tok   = G.tokens[tid];
@@ -443,43 +541,81 @@ function renderRList() {
 
 let dragSrc = null;
 
-$("btn-confirm-reorder").addEventListener("click", () => {
-  // Find the positions of the draft tokens in the current stack
-  const positions = G.rDraft.map(id => G.stack.indexOf(id)).sort((a,b) => a-b);
-  // Remove them from stack
-  G.rDraft.forEach(id => {
-    const idx = G.stack.indexOf(id);
-    if (idx !== -1) G.stack.splice(idx, 1);
+const btnConfirmReorder = $("btn-confirm-reorder");
+if (btnConfirmReorder) {
+  btnConfirmReorder.addEventListener("click", () => {
+    // Find positions of draft tokens in current stack
+    const positions = G.rDraft.map(id => G.stack.indexOf(id)).sort((a,b) => a-b);
+    
+    // Remove them from stack
+    G.rDraft.forEach(id => {
+      const idx = G.stack.indexOf(id);
+      if (idx !== -1) G.stack.splice(idx, 1);
+    });
+    
+    // Re-insert in new order at the original top positions
+    G.stack.splice(positions[0], 0, ...G.rDraft);
+
+    addLog(`${G.players[G.curPlayer].name} reordered: [${G.rDraft.map(id => G.tokens[id].name).join(" → ")}]`);
+    G.rDraft = []; 
+    G.rOpen = false; 
+    G.selected = [];
+    
+    const panel = $("reorder-panel");
+    if (panel) panel.classList.add("hidden");
+    
+    renderAll();
+    
+    // Check if game ends
+    if (checkEnd()) {
+      setTimeout(doShowResults, 500);
+    } else {
+      doEndTurn();
+    }
   });
-  // Re-insert in new order at the original top positions
-  G.stack.splice(positions[0], 0, ...G.rDraft);
+}
 
-  addLog(`${G.players[G.curPlayer].name} reordered: [${G.rDraft.map(id => G.tokens[id].name).join(" → ")}]`);
-  G.rDraft = []; G.rOpen = false; G.selected = [];
-  $("reorder-panel").classList.add("hidden");
-  doEndTurn();
-});
-
-$("btn-cancel-reorder").addEventListener("click", () => {
-  G.rDraft = []; G.rOpen = false; G.selected = [];
-  $("reorder-panel").classList.add("hidden");
-  renderAll();
-});
+const btnCancelReorder = $("btn-cancel-reorder");
+if (btnCancelReorder) {
+  btnCancelReorder.addEventListener("click", () => {
+    G.rDraft = []; 
+    G.rOpen = false; 
+    G.selected = [];
+    
+    const panel = $("reorder-panel");
+    if (panel) panel.classList.add("hidden");
+    
+    const bm = $("btn-move");
+    const br = $("btn-reorder");
+    if (bm) bm.disabled = false;
+    if (br) br.disabled = false;
+    
+    renderAll();
+  });
+}
 
 /* ════════════════════════════════════════════════════════════
    TURN END
 ═══════════════════════════════════════════════════════════ */
 function doEndTurn() {
-  if (checkEnd()) { doShowResults(); return; }
+  if (checkEnd()) {
+    doShowResults();
+    return;
+  }
 
   G.turn++;
   G.curPlayer = (G.curPlayer + 1) % G.players.length;
   G.selected  = [];
 
   const next = G.players[G.curPlayer];
-  $("modal-turn-title").textContent = `${next.name}'s Turn`;
-  $("modal-turn-msg").textContent   = `Pass the device to ${next.name}. Press Ready when set!`;
-  $("modal-turn").classList.remove("hidden");
+  const modalTitle = $("modal-turn-title");
+  const modalMsg = $("modal-turn-msg");
+  const modal = $("modal-turn");
+
+  if (modalTitle) modalTitle.textContent = `${next.name}'s Turn`;
+  if (modalMsg) modalMsg.textContent = `Pass the device to ${next.name}. Press Ready when set!`;
+  if (modal) modal.classList.remove("hidden");
+  
   renderAll();
 }
 
@@ -491,33 +627,75 @@ function checkEnd() {
 }
 
 /* ════════════════════════════════════════════════════════════
-   RESULTS
+   RESULTS – WINNER ANNOUNCEMENT
+   *** FIXED: Properly triggered and displayed ***
 ═══════════════════════════════════════════════════════════ */
 function doShowResults() {
+  if (G.gameOver) return;  // Prevent multiple calls
+  G.gameOver = true;
+
   calcScores();
   const sorted = [...G.players].sort((a,b) => b.score - a.score);
   const medals = ["🥇","🥈","🥉","4️⃣"];
-  $("results-list").innerHTML = sorted.map((p, i) => `
-    <div class="result-row rank-${i+1}">
-      <div class="result-rank">${medals[i] || (i+1)}</div>
-      <div class="result-dot" style="background:${p.color}"></div>
-      <div class="result-name">${p.name}</div>
-      <div class="result-score">${p.score} pts</div>
-    </div>`).join("");
+  
+  const resultsList = $("results-list");
+  if (resultsList) {
+    resultsList.innerHTML = sorted.map((p, i) => `
+      <div class="result-row rank-${i+1}">
+        <div class="result-rank">${medals[i] || (i+1)}</div>
+        <div class="result-dot" style="background:${p.color}"></div>
+        <div class="result-name">${p.name}</div>
+        <div class="result-score">${p.score} pts</div>
+      </div>`).join("");
+  }
+  
   showScreen("screen-results");
+  console.log("Game Over! Results shown.");
 }
 
 /* ════════════════════════════════════════════════════════════
    MODAL EVENTS
 ═══════════════════════════════════════════════════════════ */
-$("btn-rules-modal").addEventListener("click", () => $("modal-rules").classList.remove("hidden"));
-$("modal-close").addEventListener("click",     () => $("modal-rules").classList.add("hidden"));
-qs("#modal-rules .modal-overlay").addEventListener("click", () => $("modal-rules").classList.add("hidden"));
-$("modal-turn-ok").addEventListener("click", () => {
-  $("modal-turn").classList.add("hidden");
-  renderAll();
-});
-$("btn-play-again").addEventListener("click", () => showScreen("screen-setup"));
+const btnRulesModal = $("btn-rules-modal");
+if (btnRulesModal) {
+  btnRulesModal.addEventListener("click", () => {
+    const modal = $("modal-rules");
+    if (modal) modal.classList.remove("hidden");
+  });
+}
+
+const modalClose = $("modal-close");
+if (modalClose) {
+  modalClose.addEventListener("click", () => {
+    const modal = $("modal-rules");
+    if (modal) modal.classList.add("hidden");
+  });
+}
+
+const modalRulesOverlay = qs("#modal-rules .modal-overlay");
+if (modalRulesOverlay) {
+  modalRulesOverlay.addEventListener("click", () => {
+    const modal = $("modal-rules");
+    if (modal) modal.classList.add("hidden");
+  });
+}
+
+const modalTurnOk = $("modal-turn-ok");
+if (modalTurnOk) {
+  modalTurnOk.addEventListener("click", () => {
+    const modal = $("modal-turn");
+    if (modal) modal.classList.add("hidden");
+    renderAll();
+  });
+}
+
+const btnPlayAgain = $("btn-play-again");
+if (btnPlayAgain) {
+  btnPlayAgain.addEventListener("click", () => {
+    G.gameOver = false;  // Reset for next game
+    showScreen("screen-setup");
+  });
+}
 
 /* ════════════════════════════════════════════════════════════
    UTILITIES
@@ -533,6 +711,7 @@ function shuffleArray(a) {
    BOOT
 ═══════════════════════════════════════════════════════════ */
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("Game initialized");
   initSetup();
   showScreen("screen-setup");
 });
