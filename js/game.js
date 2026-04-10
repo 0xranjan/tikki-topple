@@ -275,8 +275,8 @@ function renderBoard() {
     track.appendChild(cell);
   }
 
-  // Stack row (position 0 tokens)
-  const stackToks = G.tokens.filter(t => t.position === 0);
+  // Stack row (position 0 tokens that are still in the stack)
+  const stackToks = G.tokens.filter(t => t.position === 0 && G.stack.includes(t.id));
   const sc = document.createElement("div");
   sc.className = "track-cell start-cell";
   const stHtml = stackToks.map(t =>
@@ -364,12 +364,15 @@ $("btn-move").addEventListener("click", () => {
   toMove.forEach(id => {
     const tok = G.tokens[id];
     if (tok.position < G.boardLen) {
-      tok.position += 1;   // ← THE KEY FIX: advance +1 from wherever they are
+      tok.position += 1;   // advance +1 from wherever they are
       moved.push(`${tok.name}→${tok.position}`);
     } else {
       moved.push(`${tok.name}(at finish)`);
     }
   });
+
+  // Remove any toppled tokens (reached boardLen) from the stack
+  G.stack = G.stack.filter(id => G.tokens[id].position < G.boardLen);
 
   addLog(`${G.players[G.curPlayer].name} moved [${moved.join(", ")}]`);
   G.selected = [];
