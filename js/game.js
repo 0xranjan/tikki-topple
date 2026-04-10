@@ -169,10 +169,8 @@ function renderStack() {
     if (isSel)   chip.classList.add("selected");
     if (!canSel) chip.classList.add("disabled-token");
 
-    // Show current track position on the chip
-    const posLabel = tok.position === 0
-      ? "Stack"
-      : (tok.position === G.boardLen ? "🏁 Finish" : `Pos ${tok.position}`);
+    // All tokens in stack are at position 0 (not yet on board)
+    const posLabel = "Stack";
 
     chip.innerHTML = `
       <span class="token-face">${tok.face}</span>
@@ -371,8 +369,8 @@ $("btn-move").addEventListener("click", () => {
     }
   });
 
-  // ✅ Remove toppled tokens (reached boardLen) from the stack immediately
-  G.stack = G.stack.filter(id => G.tokens[id].position < G.boardLen);
+  // ✅ Remove from stack any token that has moved onto the board (position > 0)
+  G.stack = G.stack.filter(id => G.tokens[id].position === 0);
 
   addLog(`${G.players[G.curPlayer].name} moved [${moved.join(", ")}]`);
   G.selected = [];
